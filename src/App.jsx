@@ -17,6 +17,7 @@ import { fetchAuthSession } from "aws-amplify/auth";
 import { getUrl, uploadData } from "aws-amplify/storage";
 import { generateClient } from "aws-amplify/data";
 import outputs from "../amplify_outputs.json";
+import Appointments from "./Appointments";
 
 Amplify.configure(outputs);
 const client = generateClient({ authMode: "userPool" });
@@ -185,6 +186,7 @@ function Dashboard({ signOut }) {
         ))}
       </Grid>
 
+      <Appointments client={client} role={role} />
       <Button onClick={signOut}>Sign Out</Button>
     </Flex>
   );
