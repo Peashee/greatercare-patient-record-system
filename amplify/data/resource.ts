@@ -1,14 +1,22 @@
 import { type ClientSchema, a, defineData } from '@aws-amplify/backend';
+
 const schema = a.schema({
-Note: a
+  PatientRecord: a
     .model({
-      name:a.string(),
-      description: a.string(),
+      patientName: a.string().required(),
+      patientEmail: a.string().required(),
+      notes: a.string(),
       image: a.string(),
     })
-    .authorization((allow) => [allow.owner()]),
+    .authorization((allow) => [
+      allow.groups(['ADMINS']),
+      allow.groups(['DOCTORS']).to(['create', 'read', 'update']),
+      allow.ownerDefinedIn('patientEmail').identityClaim('email').to(['read']),
+    ]),
 });
+
 export type Schema = ClientSchema<typeof schema>;
+
 export const data = defineData({
   schema,
   authorizationModes: {

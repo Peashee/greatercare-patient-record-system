@@ -13,173 +13,187 @@ import {
 } from "@aws-amplify/ui-react";
 import { Amplify } from "aws-amplify";
 import "@aws-amplify/ui-react/styles.css";
-import { getUrl } from "aws-amplify/storage";
-import { uploadData } from "aws-amplify/storage";
+import { fetchAuthSession } from "aws-amplify/auth";
+import { getUrl, uploadData } from "aws-amplify/storage";
 import { generateClient } from "aws-amplify/data";
 import outputs from "../amplify_outputs.json";
 
-/**
- * @type {import('aws-amplify/data').Client<import('../amplify/data/resource').Schema>}
- */
-
 Amplify.configure(outputs);
-const client = generateClient({
-  authMode: "userPool",
-});
+const client = generateClient({ authMode: "userPool" });
 
-export default function App() {
-  const [notes, setNotes] = useState([]);
+function Dashboard({ signOut }) {
+  const [role, setRole] = useState(null);
+  const [records, setRecords] = useState([]);
 
   useEffect(() => {
-    fetchNotes();
+    loadRole();
   }, []);
 
-  async function fetchNotes() {
-    const { data: notes } = await client.models.Note.list();
-    await Promise.all(
-      notes.map(async (note) => {
-        if (note.image) {
-          const linkToStorageFile = await getUrl({
-            path: ({ identityId }) => `media/${identityId}/${note.image}`,
-          });
-          console.log(linkToStorageFile.url);
-          note.image = linkToStorageFile.url;
+  async function loadRole() {
+    const session = await fetchAuthSession({ forceRefresh: true });
+    const groups =
+      session.tokens?.accessToken?.payload["cognito:groups"] ?? [];
+    let current = "NONE";
+    if (groups.includes("ADMINS")) current = "ADMINS";
+    else if (groups.includes("DOCTORS")) current = "DOCTORS";
+    else if (groups.includes("PATIENTS")) current = "PATIENTS";
+    setRole(current);
+    if (current !== "NONE") fetchRecords(current);
+  }
+
+  async function fetchRecords(currentRole = role) {
+    const session = await fetchAuthSession();
+    const idToken = session.tokens?.idToken?.toString();
+    const { data, errors } = await client.models.PatientRecord.list({
+      authMode: "userPool",
+      authToken: idToken,
+    });
+    if (errors) console.error("List errors:", errors);
+    const withImages = await Promise.all(
+      data.map(async (record) => {
+        if (record.image && currentRole !== "PATIENTS") {
+          try {
+            const link = await getUrl({
+              path: `records/${record.id}/${record.image}`,
+            });
+            return { ...record, imageUrl: link.url.toString() };
+          } catch (error) {
+            console.error("Could not load image:", error);
+          }
         }
-        return note;
+        return record;
       })
     );
-    console.log(notes);
-    setNotes(notes);
+    setRecords(withImages);
   }
 
-  async function createNote(event) {
+  async function createRecord(event) {
     event.preventDefault();
-    const form = new FormData(event.target);
-    console.log(form.get("image").name);
+    const formElement = event.target;
+    const form = new FormData(formElement);
+    const file = form.get("image");
+    const hasFile = file && file.name;
 
-    const { data: newNote } = await client.models.Note.create({
-      name: form.get("name"),
-      description: form.get("description"),
-      image: form.get("image").name,
-    });
+    try {
+      const { data: created, errors } =
+        await client.models.PatientRecord.create({
+          patientName: form.get("patientName"),
+          patientEmail: form.get("patientEmail").trim().toLowerCase(),
+          notes: form.get("notes"),
+          image: hasFile ? file.name : undefined,
+        });
 
-    console.log(newNote);
-    if (newNote.image)
-      if (newNote.image)
+      if (errors || !created) {
+        console.error("Create failed:", errors);
+        alert("Could not save the record: " + (errors?.[0]?.message ?? "unknown error"));
+        return;
+      }
+
+      if (hasFile) {
         await uploadData({
-          path: ({ identityId }) => `media/${identityId}/${newNote.image}`,
-          data: form.get("image"),
+          path: `records/${created.id}/${file.name}`,
+          data: file,
         }).result;
+      }
 
-    fetchNotes();
-    event.target.reset();
+      await fetchRecords();
+      formElement.reset();
+    } catch (error) {
+      console.error(error);
+      alert("Something went wrong: " + error.message);
+    }
   }
 
-  async function deleteNote({ id }) {
-    const toBeDeletedNote = {
-      id: id,
-    };
+  async function deleteRecord({ id }) {
+    try {
+      await client.models.PatientRecord.delete({ id });
+      await fetchRecords();
+    } catch (error) {
+      console.error(error);
+      alert("Could not delete the record: " + error.message);
+    }
+  }
 
-    const { data: deletedNote } = await client.models.Note.delete(
-      toBeDeletedNote
+  if (role === null) {
+    return <Text>Loading...</Text>;
+  }
+
+  if (role === "NONE") {
+    return (
+      <Flex direction="column" alignItems="center" gap="1rem" margin="3rem auto">
+        <Heading level={2}>Account awaiting a role</Heading>
+        <Text>
+          Your account has no role yet. Ask an administrator to assign one, then sign out and sign in again.
+        </Text>
+        <Button onClick={signOut}>Sign Out</Button>
+      </Flex>
     );
-    console.log(deletedNote);
-
-    fetchNotes();
   }
+
+  const isStaff = role === "ADMINS" || role === "DOCTORS";
 
   return (
-    <Authenticator>
-      {({ signOut }) => (
-        <Flex
-          className="App"
-          justifyContent="center"
-          alignItems="center"
-          direction="column"
-          width="70%"
-          margin="0 auto"
-        >
-          <Heading level={1}>Greatercare Patient Record Management System</Heading>
-          <View as="form" margin="3rem 0" onSubmit={createNote}>
-            <Flex
-              direction="column"
-              justifyContent="center"
-              gap="2rem"
-              padding="2rem"
-            >
-              <TextField
-                name="name"
-                placeholder="Note Name"
-                label="Note Name"
-                labelHidden
-                variation="quiet"
-                required
-              />
-              <TextField
-                name="description"
-                placeholder="Note Description"
-                label="Note Description"
-                labelHidden
-                variation="quiet"
-                required
-              />
-              <View
-                name="image"
-                as="input"
-                type="file"
-                alignSelf={"end"}
-                accept="image/png, image/jpeg"
-              />
+    <Flex
+      className="App"
+      justifyContent="center"
+      alignItems="center"
+      direction="column"
+      width="70%"
+      margin="0 auto"
+    >
+      <Heading level={1}>Greatercare Patient Record Management System</Heading>
+      <Text fontStyle="italic">Signed in as: {role.slice(0, -1).toLowerCase()}</Text>
 
-              <Button type="submit" variation="primary">
-                Create Note
-              </Button>
-            </Flex>
-          </View>
-          <Divider />
-          <Heading level={2}>Current Notes</Heading>
-          <Grid
-            margin="3rem 0"
-            autoFlow="column"
-            justifyContent="center"
-            gap="2rem"
-            alignContent="center"
-          >
-            {notes.map((note) => (
-              <Flex
-                key={note.id || note.name}
-                direction="column"
-                justifyContent="center"
-                alignItems="center"
-                gap="2rem"
-                border="1px solid #ccc"
-                padding="2rem"
-                borderRadius="5%"
-                className="box"
-              >
-                <View>
-                  <Heading level="3">{note.name}</Heading>
-                </View>
-                <Text fontStyle="italic">{note.description}</Text>
-                {note.image && (
-                  <Image
-                    src={note.image}
-                    alt={`visual aid for ${notes.name}`}
-                    style={{ width: 400 }}
-                  />
-                )}
-                <Button
-                  variation="destructive"
-                  onClick={() => deleteNote(note)}
-                >
-                  Delete note
-                </Button>
-              </Flex>
-            ))}
-          </Grid>
-          <Button onClick={signOut}>Sign Out</Button>
-        </Flex>
+      {isStaff && (
+        <View as="form" margin="3rem 0" onSubmit={createRecord}>
+          <Flex direction="column" gap="1.5rem" padding="2rem">
+            <TextField name="patientName" placeholder="Patient name" label="Patient name" labelHidden variation="quiet" required />
+            <TextField name="patientEmail" placeholder="Patient email" label="Patient email" labelHidden variation="quiet" required />
+            <TextField name="notes" placeholder="Clinical notes" label="Clinical notes" labelHidden variation="quiet" />
+            <input name="image" type="file" accept="image/png, image/jpeg" />
+            <Button type="submit" variation="primary">Create Record</Button>
+          </Flex>
+        </View>
       )}
+
+      <Divider />
+      <Heading level={2}>{role === "PATIENTS" ? "My Records" : "Patient Records"}</Heading>
+
+      <Grid margin="3rem 0" autoFlow="column" justifyContent="center" gap="2rem" alignContent="center">
+        {records.map((record) => (
+          <Flex
+            key={record.id}
+            direction="column"
+            alignItems="center"
+            gap="1rem"
+            border="1px solid #ccc"
+            padding="2rem"
+            borderRadius="5%"
+            className="box"
+          >
+            <Heading level="3">{record.patientName}</Heading>
+            <Text fontStyle="italic">{record.notes}</Text>
+            {record.imageUrl && (
+              <Image src={record.imageUrl} alt={`Attachment for ${record.patientName}`} style={{ width: 400 }} />
+            )}
+            {role === "ADMINS" && (
+              <Button variation="destructive" onClick={() => deleteRecord(record)}>
+                Delete record
+              </Button>
+            )}
+          </Flex>
+        ))}
+      </Grid>
+
+      <Button onClick={signOut}>Sign Out</Button>
+    </Flex>
+  );
+}
+
+export default function App() {
+  return (
+    <Authenticator>
+      {({ signOut }) => <Dashboard signOut={signOut} />}
     </Authenticator>
   );
 }
